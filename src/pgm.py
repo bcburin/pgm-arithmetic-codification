@@ -36,6 +36,8 @@ class PGMImage:
             pixels = []
             for _ in range(height):
                 row = [int(n) for n in cls._read_line(f).split()]
+                while len(row) < width:
+                    row.append(0)
                 pixels.append(row)
             return PGMImage(max_val, pixels, (width, height), file_path)
 
