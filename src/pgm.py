@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from numpy import ndarray, array
+
 
 @dataclass
 class PGMImage:
     max_value: int
-    pixels: list[list[int]]
+    pixels: ndarray
     size: tuple[int, int]
     path: Path | None = None
 
@@ -34,12 +36,9 @@ class PGMImage:
             assert 0 <= max_val < 65536
             # read pixels
             pixels = []
-            for _ in range(height):
-                row = [int(n) for n in cls._read_line(f).split()]
-                while len(row) < width:
-                    row.append(0)
-                pixels.append(row)
-            return PGMImage(max_val, pixels, (width, height), file_path)
+            for line in f:
+                pixels.extend([int(n) for n in line.split()])
+            return PGMImage(max_val, array(pixels).reshape((width, height)), (width, height), file_path)
 
     def write(self, file_path: Path):
         with open(file_path, 'w') as f:
