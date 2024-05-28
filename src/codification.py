@@ -1,110 +1,131 @@
 from pathlib import Path
-from typing import Dict, Tuple
-from collections import defaultdict
+
+import numpy as np
+from decimal import Decimal, getcontext
 
 from src.pgm import PGMImage
-from src.utils import read_pgm_images
+
+getcontext().prec = 50
 
 
-class ArithmeticEncoder:
-    def __init__(self):
-        self.low = 0.0
-        self.high = 1.0
-        self.precision = 32  # Number of bits of precision for the fractional part
-        self.one = 1 << self.precision
-        self.half = 1 << (self.precision - 1)
-        self.quarter = 1 << (self.precision - 2)
-        self.three_quarters = self.one - self.quarter
-
-    @staticmethod
-    def _build_probability_table(data: list[int]) -> Dict[int, Tuple[float, float]]:
-        frequencies = defaultdict(int)
-        for value in data:
-            frequencies[value] += 1
-
-        total = sum(frequencies.values())
-        probabilities = {k: v / total for k, v in frequencies.items()}
-
-        low = 0.0
-        prob_table = {}
-        for value, prob in sorted(probabilities.items()):
-            high = low + prob
-            prob_table[value] = (low, high)
-            low = high
-
-        return prob_table
-
-    def encode(self, image: PGMImage) -> float:
-        data = [pixel for row in image.pixels for pixel in row]
-        prob_table = self._build_probability_table(data)
-
-        low = 0.0
-        high = 1.0
-        for value in data:
-            rng = high - low
-            high = low + rng * prob_table[value][1]
-            low = low + rng * prob_table[value][0]
-
-            while True:
-                if high < 0.5:
-                    low *= 2
-                    high *= 2
-                elif low >= 0.5:
-                    low = 2 * (low - 0.5)
-                    high = 2 * (high - 0.5)
-                elif low >= 0.25 and high < 0.75:
-                    low = 2 * (low - 0.25)
-                    high = 2 * (high - 0.25)
-                else:
-                    break
-
-        return (low + high) / 2
-
-    def decode(self, code: float, image: PGMImage) -> PGMImage:
-        data = [pixel for row in image.pixels for pixel in row]
-        prob_table = self._build_probability_table(data)
-
-        low = 0.0
-        high = 1.0
-        value = code
-        decoded_data = []
-
-        for _ in range(len(data)):
-            rng = high - low
-            cumulative_value = (value - low) / rng
-
-            for pixel_value, (low_prob, high_prob) in prob_table.items():
-                if low_prob <= cumulative_value < high_prob:
-                    decoded_data.append(pixel_value)
-                    high = low + rng * high_prob
-                    low = low + rng * low_prob
-                    break
-
-            while True:
-                if high < 0.5:
-                    low *= 2
-                    high *= 2
-                    value *= 2
-                elif low >= 0.5:
-                    low = 2 * (low - 0.5)
-                    high = 2 * (high - 0.5)
-                    value = 2 * (value - 0.5)
-                elif low >= 0.25 and high < 0.75:
-                    low = 2 * (low - 0.25)
-                    high = 2 * (high - 0.25)
-                    value = 2 * (value - 0.25)
-                else:
-                    break
-
-        decoded_pixels = []
-        for i in range(0, len(decoded_data), image.size[0]):
-            decoded_pixels.append(decoded_data[i:i + image.size[0]])
-
-        return PGMImage(image.max_value, decoded_pixels, image.size, image.path)
+def split_image(image: PGMImage, block_size):
+    height, width = image.size
+    blocks = []
+    for y in range(0, height, block_size):
+        for x in range(0, width, block_size):
+            block = image.pixels[y:y+block_size, x:x+block_size]
+            blocks.append(block)
+    return blocks
 
 
-if __name__ == '__main__':
-    for idx, img in enumerate(read_pgm_images()):
-        coded = ArithmeticEncoder().encode(img)
-        decoded_img = ArithmeticEncoder().decode(coded, img)
-        decoded_img.write(Path(f'out{idx}.pgm'))
+def calculate_frequencies(block):
+    values, counts = np.unique(block, return_counts=True)
+    frequencies = {value: count for value, count in zip(values, counts)}
+    return frequencies
+
+
+def binary_arithmetic_encoding(block, frequencies):
+    total_count = sum(frequencies.values())
+    probabilities = {k: v / total_count
+                     for k, v in frequencies.items()}
+
+    low = Decimal(0)
+    high = Decimal(1)
+
+    for value in block.flatten():
+        range_width = high - low
+        high = low + range_width * \
+            Decimal(sum(probabilities[v]
+                    for v in sorted(probabilities) if v <= value))
+        low = low + range_width * \
+            Decimal(sum(probabilities[v]
+                    for v in sorted(probabilities) if v < value))
+
+    code = (low + high) / Decimal(2)
+    return code
+
+
+def encode_image_to_file(image: PGMImage, block_size):
+    blocks = split_image(image, block_size)
+    results = []
+    for block in blocks:
+        frequencies = calculate_frequencies(block)
+        code = binary_arithmetic_encoding(block, frequencies)
+        results.append((code, frequencies))
+    return results
+
+
+def binary_arithmetic_decoding(code, frequencies, block_size):
+    total_count = sum(frequencies.values())
+    probabilities = {k: v / total_count
+                     for k, v in frequencies.items()}
+    sorted_values = sorted(probabilities.keys())
+
+    decoded_block = []
+    low = Decimal(0)
+    high = Decimal(1)
+
+    for _ in range(block_size * block_size):
+        range_width = high - low
+        scaled_value = (code - low) / range_width
+
+        cumulative_probability = Decimal(0)
+        for value in sorted_values:
+            next_cumulative_probability = cumulative_probability + \
+                Decimal(probabilities[value])
+            if cumulative_probability <= scaled_value < next_cumulative_probability:
+                decoded_block.append(value)
+                high = low + range_width * next_cumulative_probability
+                low = low + range_width * cumulative_probability
+                break
+            cumulative_probability = next_cumulative_probability
+
+    return np.array(decoded_block).reshape((block_size, block_size))
+
+
+def combine_blocks(blocks, size, block_size):
+    image = np.zeros(size, dtype=np.uint8)
+    block_idx = 0
+    for y in range(0, size[0], block_size):
+        for x in range(0, size[1], block_size):
+            image[y:y+block_size, x:x+block_size] = blocks[block_idx]
+            block_idx += 1
+    return image
+
+
+def encode_results_to_file(image: PGMImage, block_size: int, save_path: Path):
+    results = encode_image_to_file(image, block_size)
+    with open(save_path, 'w') as f:
+        for code, frequencies in results:
+            f.write(f'{code}\n')
+            f.write(f'{frequencies}\n')
+
+
+def decode_image_from_file(file_path: Path, block_size, size) -> PGMImage:
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+    codes = []
+    frequencies_list = []
+    for i in range(0, len(lines), 2):
+        code = Decimal(lines[i].strip())
+        frequencies = eval(lines[i+1].strip())
+        codes.append(code)
+        frequencies_list.append(frequencies)
+
+    blocks = []
+    for code, frequencies in zip(codes, frequencies_list):
+        blocks.append(binary_arithmetic_decoding(code, frequencies, block_size))
+    pixels = combine_blocks(blocks, size, block_size)
+    return PGMImage(245, pixels, size)
+
+
+# if __name__ == '__main__':
+#     for i, img in enumerate(read_pgm_images()):
+#         results = encode_image_to_file(img, 2)
+#         blocks = []
+#         for code, frequencies in results:
+#             blocks.append(binary_arithmetic_decoding(code, frequencies, 2))
+#         pixels = combine_blocks(blocks, img.size, 2)
+#         decoded_img = PGMImage(img.max_value, pixels, img.size)
+#         decoded_img.write(Path(f'new_out{i}.pgm'))
+
