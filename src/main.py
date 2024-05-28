@@ -9,14 +9,15 @@ from src.utils import calculate_compression_rate
 def create_parser():
     parser = ArgumentParser()
     parser.add_argument('path', help='path to the image to encode')
-    parser.add_argument('--coded-path', help='save path of the code stream',
+    parser.add_argument('--coded-path', help='save path of the code stream (default=coded.pgm)',
                         default='coded.txt')
     parser.add_argument('--decoded-path',
-                        help='path to save the final decoded image', default='out.pgm')
-    parser.add_argument('--block-size', help='block size to use for encoding',
+                        help='path to save the final decoded image (default=out.pgm)', default='out.pgm')
+    parser.add_argument('--block-size', help='block size to use for encoding (default=2)',
                         default=2)
     parser.add_argument('--precision',
-                        help='floating point precision to use codification', default=50)
+                        help='floating point precision to use codification (default=50)',
+                        default=50)
     return parser
 
 
